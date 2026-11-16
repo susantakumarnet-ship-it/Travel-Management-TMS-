@@ -1,0 +1,76 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply bg-white text-slate-800 antialiased;
+  }
+  h1, h2, h3 {
+    @apply text-navy-900;
+  }
+  :focus-visible {
+    @apply outline-none ring-2 ring-gold-500 ring-offset-2;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+  }
+}
+
+@layer components {
+  .input {
+    @apply block w-full rounded-lg border border-mist-300 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400
+      transition focus:border-navy-500 focus:outline-none focus:ring-2 focus:ring-navy-500/20 disabled:bg-mist-100 disabled:text-slate-500;
+  }
+  .label {
+    @apply mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-600;
+  }
+  .card {
+    @apply rounded-2xl border border-mist-200 bg-white shadow-card;
+    /* Cards live in grid/flex tracks: let them shrink and wrap long IDs/URLs/emails
+       instead of stretching the track past the viewport on phones. */
+    /* break-word (not anywhere): wraps only genuinely overflowing words and doesn't shrink
+       min-content, so table cells like booking numbers stay on one line. */
+    min-width: 0;
+    overflow-wrap: break-word;
+  }
+  .section-title {
+    @apply font-display text-3xl font-semibold tracking-tight text-navy-900 md:text-4xl;
+  }
+  .eyebrow {
+    @apply text-xs font-bold uppercase tracking-[0.2em] text-gold-600;
+  }
+  .table-base {
+    @apply w-full text-left text-sm;
+  }
+  .table-base th {
+    @apply whitespace-nowrap border-b border-mist-200 bg-mist-50 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500;
+  }
+  .table-base td {
+    @apply border-b border-mist-100 px-4 py-3 align-middle;
+  }
+  .table-base tbody tr {
+    @apply transition hover:bg-mist-50;
+  }
+}
+
+@layer utilities {
+  .text-balance { text-wrap: balance; }
+  .scrollbar-thin::-webkit-scrollbar { height: 6px; width: 6px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { @apply rounded-full bg-mist-300; }
+}
+
+/* Markdown content (CMS pages) */
+.prose-rr h2 { @apply mb-3 mt-8 font-display text-2xl font-semibold text-navy-900; }
+.prose-rr h3 { @apply mb-2 mt-6 text-lg font-semibold text-navy-900; }
+.prose-rr p { @apply mb-4 leading-7 text-slate-700; }
+.prose-rr ul { @apply mb-4 list-disc space-y-1 pl-6 text-slate-700; }
+.prose-rr ol { @apply mb-4 list-decimal space-y-1 pl-6 text-slate-700; }
+.prose-rr table { @apply mb-6 w-full overflow-hidden rounded-xl border border-mist-200 text-sm; }
+.prose-rr th { @apply bg-navy-900 px-4 py-2 text-left font-semibold text-white; }
+.prose-rr td { @apply border-t border-mist-200 px-4 py-2; }
+.prose-rr a { @apply font-medium text-navy-600 underline underline-offset-2; }

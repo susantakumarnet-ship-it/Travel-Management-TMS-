@@ -1,0 +1,32 @@
+{
+  "name": "royal-ride",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Royal Ride – Travel & Marriage Transportation Management Platform",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces --if-present",
+    "dev:api": "npm run dev -w apps/api",
+    "dev:web": "npm run dev -w apps/web",
+    "build": "npm run build -w apps/api && npm run build -w apps/web",
+    "test": "npm run test -w apps/api",
+    "db:migrate": "npm run db:migrate -w apps/api",
+    "db:seed": "npm run db:seed -w apps/api",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "allowScripts": {
+    "@prisma/client@6.16.2": true,
+    "prisma@6.16.2": true,
+    "@prisma/engines@6.16.2": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true
+  },
+  "overrides": {
+    "@types/express-serve-static-core": "5.0.7"
+  }
+}

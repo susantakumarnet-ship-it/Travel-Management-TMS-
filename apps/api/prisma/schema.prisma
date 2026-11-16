@@ -1,0 +1,1284 @@
+// Royal Ride – database schema (MongoDB Atlas)
+// Conventions:
+//   * Money is stored in INR as Float, always rounded to 2 decimals in code. Gateways receive paise.
+//   * All timestamps are UTC; the UI renders Asia/Kolkata.
+//   * Double-booking: every booking/block transaction bumps vehicles.lockVersion first, so
+//     concurrent transactions on the same vehicle hit a write conflict and are serialised
+//     before the overlap check runs (see modules/availability/service.ts).
+//   * Schema is applied with `prisma db push`; extra partial unique indexes via prisma/mongo-indexes.ts.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────── Enums ─────────────────────────────
+
+enum Role {
+  CUSTOMER
+  ADMIN
+  OWNER
+  DRIVER
+}
+
+enum UserStatus {
+  ACTIVE
+  PENDING
+  SUSPENDED
+}
+
+enum VerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum FuelType {
+  PETROL
+  DIESEL
+  CNG
+  ELECTRIC
+  HYBRID
+}
+
+enum Transmission {
+  MANUAL
+  AUTOMATIC
+}
+
+enum DriverOption {
+  WITH_DRIVER
+  SELF_DRIVE
+  BOTH
+}
+
+enum VehicleStatus {
+  PENDING_APPROVAL
+  ACTIVE
+  INACTIVE
+  MAINTENANCE
+  REJECTED
+}
+
+enum DocumentType {
+  RC
+  INSURANCE
+  FITNESS
+  PERMIT
+  PUC
+  DRIVING_LICENCE
+  AADHAAR
+  PAN
+  POLICE_VERIFICATION
+  BANK_PROOF
+  OTHER
+}
+
+enum DocumentStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum AvailabilityType {
+  BOOKING
+  MAINTENANCE
+  OWNER_BLOCK
+}
+
+enum TravelPurpose {
+  WEDDING
+  FAMILY_TRIP
+  BUSINESS
+  AIRPORT_TRANSFER
+  LOCAL_TRAVEL
+  OUTSTATION
+  OTHER
+}
+
+enum TripType {
+  LOCAL_HOURLY
+  OUTSTATION
+  AIRPORT_TRANSFER
+  MULTI_DAY
+  SELF_DRIVE
+}
+
+enum BookingStatus {
+  PENDING
+  AWAITING_PAYMENT
+  CONFIRMED
+  DRIVER_ASSIGNED
+  VEHICLE_DISPATCHED
+  TRIP_STARTED
+  TRIP_COMPLETED
+  CANCELLED
+  REFUND_INITIATED
+  REFUNDED
+}
+
+enum OwnerDecision {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+enum LocationType {
+  PICKUP
+  DROP
+  STOP
+}
+
+enum WeddingTier {
+  SILVER
+  GOLD
+  PREMIUM
+  LUXURY
+}
+
+enum WeddingRentalMode {
+  HOURLY
+  FULL_DAY
+}
+
+enum WeddingRequestStatus {
+  ENQUIRY
+  QUOTED
+  ACCEPTED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+}
+
+enum TravelPackageType {
+  ODISHA_TOUR
+  CITY_SIGHTSEEING
+  FAMILY_VACATION
+  WEEKEND_TRIP
+  OUTSTATION
+  CUSTOM
+}
+
+enum PaymentGateway {
+  RAZORPAY
+  CASHFREE
+  PHONEPE
+  CASH
+  BANK_TRANSFER
+  /// Development-only simulated gateway (refused when NODE_ENV=production)
+  TEST
+}
+
+enum PaymentPurpose {
+  ADVANCE
+  FULL
+  BALANCE
+}
+
+enum PaymentStatus {
+  CREATED
+  AUTHORIZED
+  CAPTURED
+  FAILED
+}
+
+enum RefundStatus {
+  INITIATED
+  PROCESSED
+  FAILED
+}
+
+enum InvoiceType {
+  ADVANCE_RECEIPT
+  TAX_INVOICE
+  CREDIT_NOTE
+}
+
+enum DiscountType {
+  PERCENT
+  FLAT
+}
+
+enum ReviewStatus {
+  PUBLISHED
+  HIDDEN
+}
+
+enum NotificationChannel {
+  SMS
+  WHATSAPP
+  EMAIL
+  IN_APP
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  FAILED
+}
+
+enum SettlementStatus {
+  PENDING
+  PROCESSING
+  PAID
+}
+
+enum AssignmentStatus {
+  ASSIGNED
+  ACCEPTED
+  REJECTED
+  CANCELLED
+  COMPLETED
+}
+
+enum PricingRuleType {
+  SEASONAL
+  WEEKEND
+  NIGHT
+  STATE_TAX
+  WAITING
+  PEAK_DATE
+}
+
+enum EnquiryType {
+  CONTACT
+  CUSTOM_TRAVEL
+  CORPORATE
+  WHATSAPP
+}
+
+enum EnquiryStatus {
+  NEW
+  IN_PROGRESS
+  CLOSED
+}
+
+// ─────────────────────── Identity & access ───────────────────────
+
+model User {
+  id           String     @id @default(auto()) @map("_id") @db.ObjectId
+  phone        String     @unique
+  email        String?
+  name         String?
+  role         Role       @default(CUSTOMER)
+  status       UserStatus @default(ACTIVE)
+  passwordHash String?
+  adminRoleId  String?    @db.ObjectId
+  avatarUrl    String?
+  lastLoginAt  DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  adminRole        AdminRole?             @relation(fields: [adminRoleId], references: [id])
+  customerProfile  CustomerProfile?
+  owner            VehicleOwner?
+  driver           Driver?
+  addresses        Address[]
+  refreshTokens    RefreshToken[]
+  bookings         Booking[]              @relation("CustomerBookings")
+  weddingRequests  WeddingRequest[]
+  payments         Payment[]
+  reviews          Review[]
+  notifications    Notification[]
+  auditLogs        AuditLog[]
+  couponRedemption CouponRedemption[]
+  statusChanges    BookingStatusHistory[]
+  enquiries        Enquiry[]
+
+  @@index([role, status])
+  @@map("users")
+}
+
+model AdminRole {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  name        String   @unique
+  description String?
+  /// Permission keys such as "bookings:write". "*" grants everything.
+  permissions String[]
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  users       User[]
+
+  @@map("admin_roles")
+}
+
+model OtpCode {
+  id         String    @id @default(auto()) @map("_id") @db.ObjectId
+  phone      String
+  codeHash   String
+  purpose    String    @default("login")
+  attempts   Int       @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  ip         String?
+  createdAt  DateTime  @default(now())
+
+  @@index([phone, createdAt])
+  @@map("otp_codes")
+}
+
+model RefreshToken {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String    @db.ObjectId
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  userAgent String?
+  ip        String?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model CustomerProfile {
+  id             String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId         String    @unique @db.ObjectId
+  dateOfBirth    DateTime?
+  gender         String?
+  gstin          String?
+  companyName    String?
+  emergencyName  String?
+  emergencyPhone String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("customer_profiles")
+}
+
+model Address {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @db.ObjectId
+  label     String   @default("Home")
+  line1     String
+  line2     String?
+  city      String
+  state     String
+  pincode   String
+  lat       Float?
+  lng       Float?
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("addresses")
+}
+
+// ───────────────────────── Partners ─────────────────────────
+
+model City {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  state     String
+  slug      String    @unique
+  lat       Float?
+  lng       Float?
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  vehicles  Vehicle[]
+  drivers   Driver[]
+
+  @@unique([name, state])
+  @@map("cities")
+}
+
+model VehicleOwner {
+  id                String             @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String             @unique @db.ObjectId
+  businessName      String
+  contactPerson     String?
+  address           String?
+  city              String?
+  state             String?
+  panNumber         String?
+  gstin             String?
+  bankAccountName   String?
+  bankAccountNumber String?
+  bankIfsc          String?
+  upiId             String?
+  /// Overrides category/default commission when set (percentage, e.g. 15.00)
+  commissionRate    Float?
+  kycStatus         VerificationStatus @default(PENDING)
+  kycNote           String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vehicles    Vehicle[]
+  drivers     Driver[]
+  bookings    Booking[]
+  settlements OwnerSettlement[]
+  documents   OwnerDocument[]
+
+  @@index([kycStatus])
+  @@map("vehicle_owners")
+}
+
+model OwnerDocument {
+  id        String         @id @default(auto()) @map("_id") @db.ObjectId
+  ownerId   String         @db.ObjectId
+  type      DocumentType
+  number    String?
+  fileKey   String
+  status    DocumentStatus @default(PENDING)
+  note      String?
+  createdAt DateTime       @default(now())
+  owner     VehicleOwner   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId])
+  @@map("owner_documents")
+}
+
+model Driver {
+  id                 String             @id @default(auto()) @map("_id") @db.ObjectId
+  userId             String             @unique @db.ObjectId
+  ownerId            String?            @db.ObjectId
+  cityId             String?            @db.ObjectId
+  licenceNumber      String             @unique
+  licenceExpiry      DateTime
+  experienceYears    Int                @default(0)
+  languages          String[]
+  dateOfBirth        DateTime?
+  address            String?
+  verificationStatus VerificationStatus @default(PENDING)
+  verificationNote   String?
+  isAvailable        Boolean            @default(true)
+  ratingAvg          Float              @default(0)
+  ratingCount        Int                @default(0)
+  /// Driver's share per trip day (INR)
+  dailyWage          Float              @default(800)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  owner       VehicleOwner?      @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  city        City?              @relation(fields: [cityId], references: [id])
+  documents   DriverDocument[]
+  assignments DriverAssignment[]
+  bookings    Booking[]
+  vehicles    Vehicle[]          @relation("DefaultDriver")
+  reviews     Review[]
+
+  @@index([verificationStatus, isAvailable])
+  @@map("drivers")
+}
+
+model DriverDocument {
+  id             String         @id @default(auto()) @map("_id") @db.ObjectId
+  driverId       String         @db.ObjectId
+  type           DocumentType
+  number         String?
+  fileKey        String
+  expiresAt      DateTime?
+  status         DocumentStatus @default(PENDING)
+  note           String?
+  reminderSentAt DateTime?
+  createdAt      DateTime       @default(now())
+  driver         Driver         @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@index([driverId])
+  @@index([expiresAt])
+  @@map("driver_documents")
+}
+
+// ───────────────────────── Catalogue ─────────────────────────
+
+model VehicleCategory {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  name           String   @unique
+  slug           String   @unique
+  description    String?
+  imageUrl       String?
+  icon           String?
+  sortOrder      Int      @default(0)
+  isActive       Boolean  @default(true)
+  isWedding      Boolean  @default(false)
+  /// Platform commission % for vehicles in this category
+  commissionRate Float?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  models         VehicleModel[]
+  vehicles       Vehicle[]
+  pricingRules   PricingRule[]
+  travelPackages TravelPackage[]
+
+  @@map("vehicle_categories")
+}
+
+model VehicleModel {
+  id           String          @id @default(auto()) @map("_id") @db.ObjectId
+  categoryId   String          @db.ObjectId
+  make         String
+  name         String
+  seats        Int
+  luggageBags  Int             @default(2)
+  fuelType     FuelType        @default(PETROL)
+  transmission Transmission    @default(MANUAL)
+  imageUrl     String?
+  isActive     Boolean         @default(true)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  category     VehicleCategory @relation(fields: [categoryId], references: [id])
+  vehicles     Vehicle[]
+
+  @@unique([make, name])
+  @@map("vehicle_models")
+}
+
+model Vehicle {
+  id                  String        @id @default(auto()) @map("_id") @db.ObjectId
+  ownerId             String        @db.ObjectId
+  categoryId          String        @db.ObjectId
+  modelId             String        @db.ObjectId
+  cityId              String        @db.ObjectId
+  defaultDriverId     String?       @db.ObjectId
+  title               String
+  slug                String        @unique
+  registrationNumber  String        @unique
+  year                Int
+  color               String?
+  seats               Int
+  luggageBags         Int
+  hasAc               Boolean       @default(true)
+  fuelType            FuelType
+  transmission        Transmission
+  driverOption        DriverOption  @default(WITH_DRIVER)
+  description         String?
+  features            String[]
+  status              VehicleStatus @default(PENDING_APPROVAL)
+  statusNote          String?
+  isFeatured          Boolean       @default(false)
+  decorationAvailable Boolean       @default(false)
+
+  // Compliance
+  insuranceExpiry DateTime?
+  fitnessExpiry   DateTime?
+  pollutionExpiry DateTime?
+  permitType      String?
+  permitNumber    String?
+  permitExpiry    DateTime?
+
+  // Pricing (INR) — owner-defined, admin may override
+  perKmRate             Float
+  perDayRate            Float
+  perHourRate           Float
+  minBookingHours       Int    @default(4)
+  includedKmPerDay      Int    @default(250)
+  includedKmPerHour     Int    @default(10)
+  extraKmRate           Float
+  extraHourRate         Float
+  driverAllowancePerDay Float  @default(0)
+  nightChargePerNight   Float  @default(0)
+  decorationCharge      Float  @default(0)
+  securityDeposit       Float  @default(0)
+  selfDrivePerDayRate   Float?
+
+  ratingAvg   Float    @default(0)
+  /// Bumped inside every booking/block transaction so concurrent writers conflict.
+  lockVersion Int      @default(0)
+  ratingCount Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner         VehicleOwner          @relation(fields: [ownerId], references: [id])
+  category      VehicleCategory       @relation(fields: [categoryId], references: [id])
+  model         VehicleModel          @relation(fields: [modelId], references: [id])
+  city          City                  @relation(fields: [cityId], references: [id])
+  defaultDriver Driver?               @relation("DefaultDriver", fields: [defaultDriverId], references: [id], onDelete: SetNull)
+  images        VehicleImage[]
+  documents     VehicleDocument[]
+  availability  VehicleAvailability[]
+  bookings      Booking[]
+  reviews       Review[]
+
+  @@index([status, cityId, categoryId])
+  @@index([ownerId])
+  @@index([seats])
+  @@map("vehicles")
+}
+
+model VehicleImage {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  vehicleId String   @db.ObjectId
+  url       String
+  alt       String?
+  sortOrder Int      @default(0)
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+  vehicle   Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId])
+  @@map("vehicle_images")
+}
+
+model VehicleDocument {
+  id             String         @id @default(auto()) @map("_id") @db.ObjectId
+  vehicleId      String         @db.ObjectId
+  type           DocumentType
+  number         String?
+  fileKey        String
+  expiresAt      DateTime?
+  status         DocumentStatus @default(PENDING)
+  note           String?
+  reminderSentAt DateTime?
+  createdAt      DateTime       @default(now())
+  vehicle        Vehicle        @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId])
+  @@index([expiresAt])
+  @@map("vehicle_documents")
+}
+
+/// A time range during which a vehicle cannot be booked.
+/// Overlaps between *active* rows are rejected by a GiST exclusion constraint.
+model VehicleAvailability {
+  id            String           @id @default(auto()) @map("_id") @db.ObjectId
+  vehicleId     String           @db.ObjectId
+  bookingId     String?          @db.ObjectId
+  type          AvailabilityType
+  startAt       DateTime
+  endAt         DateTime
+  active        Boolean          @default(true)
+  /// Unpaid booking holds lapse at this time and are released by the scheduler.
+  holdExpiresAt DateTime?
+  reason        String?
+  createdAt     DateTime         @default(now())
+  vehicle       Vehicle          @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  booking       Booking?         @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId, startAt, endAt])
+  @@index([active, holdExpiresAt])
+  @@map("vehicle_availability")
+}
+
+// ───────────────────────── Bookings ─────────────────────────
+
+model Booking {
+  id               String  @id @default(auto()) @map("_id") @db.ObjectId
+  bookingNumber    String  @unique
+  customerId       String  @db.ObjectId
+  vehicleId        String  @db.ObjectId
+  ownerId          String  @db.ObjectId
+  driverId         String? @db.ObjectId
+  weddingRequestId String? @db.ObjectId
+  travelPackageId  String? @db.ObjectId
+  couponId         String? @db.ObjectId
+
+  purpose            TravelPurpose
+  tripType           TripType
+  withDriver         Boolean       @default(true)
+  pickupAt           DateTime
+  returnAt           DateTime
+  pickupAddress      String
+  dropAddress        String?
+  estimatedKm        Int           @default(0)
+  passengers         Int           @default(1)
+  luggageBags        Int           @default(0)
+  acRequired         Boolean       @default(true)
+  decorationRequired Boolean       @default(false)
+  specialRequests    String?
+
+  status          BookingStatus @default(PENDING)
+  ownerDecision   OwnerDecision @default(PENDING)
+  ownerDecisionAt DateTime?
+  ownerNote       String?
+
+  /// Full output of the pricing engine at quote time.
+  priceBreakdown  Json
+  subtotal        Float
+  discountAmount  Float @default(0)
+  taxAmount       Float @default(0)
+  totalAmount     Float
+  advanceAmount   Float
+  paidAmount      Float @default(0)
+  securityDeposit Float @default(0)
+
+  // Trip actuals (filled by driver)
+  startOdometer Int?
+  endOdometer   Int?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  extraCharges  Json?
+  finalAmount   Float?
+
+  // Cancellation
+  cancelledAt        DateTime?
+  cancelledById      String?
+  cancellationReason String?
+  cancellationFee    Float?
+
+  // Commission
+  commissionRate   Float   @default(0)
+  commissionAmount Float   @default(0)
+  ownerPayout      Float   @default(0)
+  settlementId     String? @db.ObjectId
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customer       User                   @relation("CustomerBookings", fields: [customerId], references: [id])
+  vehicle        Vehicle                @relation(fields: [vehicleId], references: [id])
+  owner          VehicleOwner           @relation(fields: [ownerId], references: [id])
+  driver         Driver?                @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  weddingRequest WeddingRequest?        @relation(fields: [weddingRequestId], references: [id], onDelete: SetNull)
+  travelPackage  TravelPackage?         @relation(fields: [travelPackageId], references: [id], onDelete: SetNull)
+  coupon         Coupon?                @relation(fields: [couponId], references: [id], onDelete: SetNull)
+  settlement     OwnerSettlement?       @relation(fields: [settlementId], references: [id], onDelete: SetNull)
+  availability   VehicleAvailability[]
+  passengersList BookingPassenger[]
+  locations      BookingLocation[]
+  payments       Payment[]
+  refunds        Refund[]
+  invoices       Invoice[]
+  review         Review?
+  assignments    DriverAssignment[]
+  statusHistory  BookingStatusHistory[]
+  redemption     CouponRedemption?
+
+  @@index([customerId, createdAt])
+  @@index([vehicleId, pickupAt])
+  @@index([ownerId, status])
+  @@index([driverId, status])
+  @@index([status, pickupAt])
+  @@index([purpose, createdAt])
+  @@map("bookings")
+}
+
+model BookingPassenger {
+  id        String  @id @default(auto()) @map("_id") @db.ObjectId
+  bookingId String  @db.ObjectId
+  name      String
+  phone     String?
+  age       Int?
+  isPrimary Boolean @default(false)
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@map("booking_passengers")
+}
+
+model BookingLocation {
+  id          String       @id @default(auto()) @map("_id") @db.ObjectId
+  bookingId   String       @db.ObjectId
+  type        LocationType
+  sequence    Int
+  address     String
+  lat         Float?
+  lng         Float?
+  scheduledAt DateTime?
+  booking     Booking      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@unique([bookingId, sequence])
+  @@map("booking_locations")
+}
+
+model BookingStatusHistory {
+  id         String         @id @default(auto()) @map("_id") @db.ObjectId
+  bookingId  String         @db.ObjectId
+  fromStatus BookingStatus?
+  toStatus   BookingStatus
+  note       String?
+  actorId    String?        @db.ObjectId
+  createdAt  DateTime       @default(now())
+  booking    Booking        @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  actor      User?          @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([bookingId, createdAt])
+  @@map("booking_status_history")
+}
+
+model DriverAssignment {
+  id            String           @id @default(auto()) @map("_id") @db.ObjectId
+  bookingId     String           @db.ObjectId
+  driverId      String           @db.ObjectId
+  assignedById  String?
+  status        AssignmentStatus @default(ASSIGNED)
+  note          String?
+  driverEarning Float            @default(0)
+  assignedAt    DateTime         @default(now())
+  respondedAt   DateTime?
+  booking       Booking          @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  driver        Driver           @relation(fields: [driverId], references: [id])
+
+  @@index([driverId, status])
+  @@index([bookingId])
+  @@map("driver_assignments")
+}
+
+// ───────────────────────── Weddings ─────────────────────────
+
+model WeddingPackage {
+  id                 String           @id @default(auto()) @map("_id") @db.ObjectId
+  name               String
+  slug               String           @unique
+  tier               WeddingTier
+  tagline            String?
+  description        String?
+  basePrice          Float
+  includedHours      Int              @default(8)
+  includedKm         Int              @default(80)
+  vehicleCount       Int              @default(1)
+  extraHourRate      Float            @default(0)
+  extraKmRate        Float            @default(0)
+  decorationIncluded Boolean          @default(true)
+  inclusions         String[]
+  vehicleHighlights  String[]
+  imageUrl           String?
+  isActive           Boolean          @default(true)
+  sortOrder          Int              @default(0)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  requests           WeddingRequest[]
+
+  @@map("wedding_packages")
+}
+
+/// Wedding booking details: one per wedding, may spawn many vehicle bookings.
+model WeddingRequest {
+  id                   String               @id @default(auto()) @map("_id") @db.ObjectId
+  requestNumber        String               @unique
+  customerId           String               @db.ObjectId
+  packageId            String?              @db.ObjectId
+  weddingDate          DateTime
+  venueName            String
+  venueAddress         String
+  dropLocation         String?
+  rentalMode           WeddingRentalMode    @default(FULL_DAY)
+  hours                Int?
+  totalVehicles        Int                  @default(1)
+  brideCar             Boolean              @default(false)
+  groomCar             Boolean              @default(false)
+  guestVehicles        Int                  @default(0)
+  guestCount           Int?
+  decoratedCars        Int                  @default(0)
+  preferredCategoryIds String[]
+  decorationRequest    String?
+  /// [{ name: "Haldi", date: "2026-12-01", vehicles: 2, notes: "" }]
+  events               Json?
+  itineraryFileKey     String?
+  notes                String?
+  status               WeddingRequestStatus @default(ENQUIRY)
+  quotedAmount         Float?
+  quoteBreakdown       Json?
+  quoteNotes           String?
+  quotedAt             DateTime?
+  quoteValidUntil      DateTime?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  customer     User                 @relation(fields: [customerId], references: [id])
+  package      WeddingPackage?      @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  pickupPoints WeddingPickupPoint[]
+  bookings     Booking[]
+
+  @@index([weddingDate])
+  @@index([status])
+  @@map("wedding_requests")
+}
+
+model WeddingPickupPoint {
+  id               String         @id @default(auto()) @map("_id") @db.ObjectId
+  weddingRequestId String         @db.ObjectId
+  sequence         Int
+  label            String?
+  address          String
+  pickupTime       String?
+  passengers       Int?
+  weddingRequest   WeddingRequest @relation(fields: [weddingRequestId], references: [id], onDelete: Cascade)
+
+  @@unique([weddingRequestId, sequence])
+  @@map("wedding_pickup_points")
+}
+
+// ───────────────────────── Travel packages ─────────────────────────
+
+model TravelPackage {
+  id                    String            @id @default(auto()) @map("_id") @db.ObjectId
+  title                 String
+  slug                  String            @unique
+  type                  TravelPackageType
+  destination           String
+  startCity             String            @default("Bhubaneswar")
+  durationDays          Int
+  durationNights        Int               @default(0)
+  summary               String?
+  description           String?
+  highlights            String[]
+  inclusions            String[]
+  exclusions            String[]
+  /// Package price for the recommended vehicle (INR)
+  basePrice             Float
+  estimatedKm           Int               @default(0)
+  minPassengers         Int               @default(1)
+  maxPassengers         Int               @default(7)
+  recommendedCategoryId String?           @db.ObjectId
+  imageUrl              String?
+  gallery               String[]
+  isPublished           Boolean           @default(false)
+  isFeatured            Boolean           @default(false)
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  recommendedCategory VehicleCategory?  @relation(fields: [recommendedCategoryId], references: [id], onDelete: SetNull)
+  itinerary           TravelItinerary[]
+  bookings            Booking[]
+
+  @@index([isPublished, type])
+  @@map("travel_packages")
+}
+
+model TravelItinerary {
+  id          String        @id @default(auto()) @map("_id") @db.ObjectId
+  packageId   String        @db.ObjectId
+  dayNumber   Int
+  title       String
+  description String?
+  places      String[]
+  package     TravelPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  @@unique([packageId, dayNumber])
+  @@map("travel_itineraries")
+}
+
+// ───────────────────────── Payments ─────────────────────────
+
+model Payment {
+  id               String         @id @default(auto()) @map("_id") @db.ObjectId
+  bookingId        String         @db.ObjectId
+  userId           String         @db.ObjectId
+  gateway          PaymentGateway
+  purpose          PaymentPurpose
+  amount           Float
+  currency         String         @default("INR")
+  status           PaymentStatus  @default(CREATED)
+  gatewayOrderId   String?
+  gatewayPaymentId String?
+  method           String?
+  failureReason    String?
+  rawPayload       Json?
+  recordedById     String?
+  capturedAt       DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  booking Booking  @relation(fields: [bookingId], references: [id])
+  user    User     @relation(fields: [userId], references: [id])
+  refunds Refund[]
+
+  @@index([bookingId])
+  @@index([status, createdAt])
+  @@map("payments")
+}
+
+/// Every gateway webhook is stored once (idempotency + audit).
+model WebhookEvent {
+  id          String         @id @default(auto()) @map("_id") @db.ObjectId
+  gateway     PaymentGateway
+  eventId     String
+  eventType   String
+  payload     Json
+  processedAt DateTime?
+  error       String?
+  createdAt   DateTime       @default(now())
+
+  @@unique([gateway, eventId])
+  @@map("webhook_events")
+}
+
+model Refund {
+  id              String       @id @default(auto()) @map("_id") @db.ObjectId
+  paymentId       String       @db.ObjectId
+  bookingId       String       @db.ObjectId
+  amount          Float
+  status          RefundStatus @default(INITIATED)
+  gatewayRefundId String?
+  reason          String?
+  initiatedById   String?
+  processedAt     DateTime?
+  failureReason   String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  payment         Payment      @relation(fields: [paymentId], references: [id])
+  booking         Booking      @relation(fields: [bookingId], references: [id])
+
+  @@index([bookingId])
+  @@index([status])
+  @@map("refunds")
+}
+
+model Invoice {
+  id            String      @id @default(auto()) @map("_id") @db.ObjectId
+  invoiceNumber String      @unique
+  bookingId     String      @db.ObjectId
+  type          InvoiceType
+  billingName   String
+  billingGstin  String?
+  placeOfSupply String
+  /// [{ description, sac, amount }]
+  lineItems     Json
+  taxableAmount Float
+  cgst          Float       @default(0)
+  sgst          Float       @default(0)
+  igst          Float       @default(0)
+  total         Float
+  issuedAt      DateTime    @default(now())
+  booking       Booking     @relation(fields: [bookingId], references: [id])
+
+  @@index([bookingId])
+  @@index([issuedAt])
+  @@map("invoices")
+}
+
+model Coupon {
+  id             String             @id @default(auto()) @map("_id") @db.ObjectId
+  code           String             @unique
+  title          String
+  description    String?
+  discountType   DiscountType
+  value          Float
+  maxDiscount    Float?
+  minOrderAmount Float              @default(0)
+  validFrom      DateTime
+  validTo        DateTime
+  usageLimit     Int?
+  perUserLimit   Int                @default(1)
+  usedCount      Int                @default(0)
+  purposes       TravelPurpose[]
+  categoryIds    String[]
+  isActive       Boolean            @default(true)
+  isFeatured     Boolean            @default(false)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  bookings       Booking[]
+  redemptions    CouponRedemption[]
+
+  @@map("coupons")
+}
+
+model CouponRedemption {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  couponId  String   @db.ObjectId
+  userId    String   @db.ObjectId
+  bookingId String   @unique @db.ObjectId
+  amount    Float
+  createdAt DateTime @default(now())
+  coupon    Coupon   @relation(fields: [couponId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+  booking   Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([couponId, userId])
+  @@map("coupon_redemptions")
+}
+
+model OwnerSettlement {
+  id               String           @id @default(auto()) @map("_id") @db.ObjectId
+  ownerId          String           @db.ObjectId
+  periodStart      DateTime
+  periodEnd        DateTime
+  grossAmount      Float
+  commissionAmount Float
+  adjustments      Float            @default(0)
+  netAmount        Float
+  status           SettlementStatus @default(PENDING)
+  referenceNumber  String?
+  note             String?
+  paidAt           DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  owner            VehicleOwner     @relation(fields: [ownerId], references: [id])
+  bookings         Booking[]
+
+  @@index([ownerId, status])
+  @@map("owner_settlements")
+}
+
+// ───────────────────────── Engagement ─────────────────────────
+
+model Review {
+  id            String       @id @default(auto()) @map("_id") @db.ObjectId
+  bookingId     String       @unique @db.ObjectId
+  customerId    String       @db.ObjectId
+  vehicleId     String       @db.ObjectId
+  driverId      String?      @db.ObjectId
+  rating        Int
+  vehicleRating Int?
+  driverRating  Int?
+  comment       String?
+  status        ReviewStatus @default(PUBLISHED)
+  ownerReply    String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  booking       Booking      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  customer      User         @relation(fields: [customerId], references: [id])
+  vehicle       Vehicle      @relation(fields: [vehicleId], references: [id])
+  driver        Driver?      @relation(fields: [driverId], references: [id], onDelete: SetNull)
+
+  @@index([vehicleId, status])
+  @@map("reviews")
+}
+
+model Notification {
+  id        String              @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String?             @db.ObjectId
+  channel   NotificationChannel
+  event     String
+  recipient String
+  title     String?
+  body      String
+  status    NotificationStatus  @default(QUEUED)
+  error     String?
+  meta      Json?
+  sentAt    DateTime?
+  readAt    DateTime?
+  createdAt DateTime            @default(now())
+  user      User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, channel, readAt])
+  @@index([status, createdAt])
+  @@map("notifications")
+}
+
+model Enquiry {
+  id        String        @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String?       @db.ObjectId
+  type      EnquiryType
+  name      String
+  phone     String
+  email     String?
+  message   String
+  meta      Json?
+  status    EnquiryStatus @default(NEW)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  user      User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@map("enquiries")
+}
+
+// ───────────────────────── Configuration ─────────────────────────
+
+/// Admin-configurable surcharges and multipliers applied by the pricing engine.
+model PricingRule {
+  id         String           @id @default(auto()) @map("_id") @db.ObjectId
+  name       String
+  type       PricingRuleType
+  categoryId String?          @db.ObjectId
+  /// Inclusive date window (SEASONAL, PEAK_DATE)
+  startDate  DateTime?
+  endDate    DateTime?
+  /// 0=Sun … 6=Sat (WEEKEND)
+  daysOfWeek Int[]
+  /// e.g. 1.15 = +15 %
+  multiplier Float?
+  flatAmount Float?
+  /// STATE_TAX: destination state; NIGHT: { startHour, endHour }; WAITING: { freeMinutes, perHour }
+  state      String?
+  config     Json?
+  priority   Int              @default(0)
+  isActive   Boolean          @default(true)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+  category   VehicleCategory? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@index([type, isActive])
+  @@map("pricing_rules")
+}
+
+model Setting {
+  key       String   @id @map("_id")
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
+
+model Page {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  slug            String   @unique
+  title           String
+  body            String
+  metaTitle       String?
+  metaDescription String?
+  isPublished     Boolean  @default(true)
+  updatedAt       DateTime @updatedAt
+  createdAt       DateTime @default(now())
+
+  @@map("pages")
+}
+
+model ContentBlock {
+  key       String   @id @map("_id")
+  data      Json
+  updatedAt DateTime @updatedAt
+
+  @@map("content_blocks")
+}
+
+model Testimonial {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  location  String?
+  occasion  String?
+  rating    Int      @default(5)
+  quote     String
+  avatarUrl String?
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@map("testimonials")
+}
+
+model Destination {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  name         String
+  slug         String   @unique
+  state        String
+  tagline      String?
+  imageUrl     String?
+  distanceKm   Int?
+  startingFare Float?
+  isActive     Boolean  @default(true)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  @@map("destinations")
+}
+
+model AuditLog {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  actorId   String?  @db.ObjectId
+  action    String
+  entity    String
+  entityId  String?
+  before    Json?
+  after     Json?
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  actor     User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([entity, entityId])
+  @@index([actorId, createdAt])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+/// Atomic counters for human-readable numbers (bookings, invoices, wedding requests).
+model Counter {
+  id  String @id @map("_id")
+  seq Int    @default(0)
+
+  @@map("counters")
+}
