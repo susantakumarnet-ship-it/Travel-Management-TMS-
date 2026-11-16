@@ -17,7 +17,7 @@
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.9.0"
   },
   "allowScripts": {
     "@prisma/client@6.16.2": true,
